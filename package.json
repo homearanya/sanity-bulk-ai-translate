@@ -4,17 +4,16 @@
   "main": "sanity-translate.cjs",
   "type": "commonjs",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node test-script.js",
     "start": "node sanity-translate.cjs",
     "translate": "node sanity-translate.cjs"
   },
   "keywords": [],
   "author": "homearanya",
   "license": "ISC",
-  "description": "A utility to bulk translate documents in Sanity CMS using the Sanity AI Assist Plugin",
+  "description": "A utility to bulk translate specific fields in Sanity CMS documents using the Sanity AI Assist Plugin and internationalized-array plugin",
   "dependencies": {
     "@sanity/client": "^6.28.4",
-    "dotenv": "^16.4.7",
-    "fs": "^0.0.1-security"
+    "dotenv": "^16.4.7"
   }
 }

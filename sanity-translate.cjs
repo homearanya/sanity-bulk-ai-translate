@@ -23,34 +23,28 @@ const TARGET_LANGUAGE = "fr" // Target language code - change as needed
 const USER_ID = process.env.SANITY_USER_ID || "" // Your Sanity user ID (optional)
 const STYLEGUIDE = process.env.TRANSLATION_STYLEGUIDE || "" // Any translation styleguide you want to use
 
-// Define the content types to process - these are your document types
+// Define the content types to process with field-level translation support
+// These types use the sanity-plugin-internationalized-array plugin
 const CONTENT_TYPES = [
-  { type: "resource", count: 21 },
-  { type: "section", count: 36 },
-  { type: "button", count: 61 },
-  { type: "events", count: 21 },
-  { type: "footerGuide", count: 3 },
-  { type: "lesson", count: 857 },
-  { type: "menuItems", count: 53 },
-  { type: "settings", count: 4 },
-  { type: "dimension", count: 20 },
-  { type: "module", count: 5 },
-  { type: "testimonial", count: 12 },
-  { type: "additionalResources", count: 82 },
-  { type: "assessmentReport", count: 2 },
-  { type: "course", count: 88 },
-  { type: "form", count: 17 },
-  { type: "menu", count: 23 },
-  { type: "page", count: 53 },
-  { type: "statement", count: 132 },
-  { type: "author", count: 22 },
-  { type: "collection", count: 15 },
-  { type: "contentCard", count: 60 },
-  { type: "dimensionGroup", count: 6 },
+  { 
+    type: "course", 
+    count: 88,
+    fields: ["title", "duration", "description"]
+  },
+  { 
+    type: "author", 
+    count: 22,
+    fields: ["role", "seoTitle", "seoDescription"]
+  },
+  { 
+    type: "dimension", 
+    count: 20,
+    fields: ["title", "subtitle", "description"]
+  },
 ]
 
-// Note: We're not explicitly setting fieldLanguageMap as it appears
-// to be handled internally by the Sanity AI Assist plugin based on your code
+// Note: Using field-level translations with sanity-plugin-internationalized-array
+// This means fields are stored as arrays like: [{ _key: "en", value: "English text" }, { _key: "fr", value: "French text" }]
 
 // Fetch schema information
 async function fetchSchema() {
@@ -74,15 +68,15 @@ async function fetchSchema() {
   }
 }
 
-// Function to translate document using Sanity AI Assist
-async function translateDocument(documentId, schema) {
+// Function to translate specific fields of a document using Sanity AI Assist
+async function translateDocument(documentId, schema, field) {
   try {
-    console.log(`Translating document ${documentId}...`)
+    console.log(`Translating field '${field}' for document ${documentId}...`)
 
-    // Construct the API request based on your code
+    // Construct the API request for field-level translation
     const apiUrl = `/assist/tasks/translate/${process.env.SANITY_DATASET}?projectId=${process.env.SANITY_PROJECT_ID}`
 
-    // We're matching the exact parameters used in your UI code
+    // For field-level translation, we specify the field path in translatePath
     const response = await client.request({
       method: "POST",
       url: apiUrl,
@@ -91,7 +85,7 @@ async function translateDocument(documentId, schema) {
         types: schema,
         languagePath: SOURCE_LANGUAGE, // Source language
         userStyleguide: STYLEGUIDE, // Any translation styleguide
-        translatePath: "", // Empty means translate the whole document
+        translatePath: field, // Specify the field to translate
         userId: USER_ID,
         conditionalMembers: [], // We don't have form state to get these
       },
@@ -100,10 +94,11 @@ async function translateDocument(documentId, schema) {
     return {
       success: true,
       response,
+      field,
     }
   } catch (error) {
     console.error(
-      `Translation error for document ${documentId}:`,
+      `Translation error for field '${field}' in document ${documentId}:`,
       error.message
     )
     if (error.response) {
@@ -114,21 +109,24 @@ async function translateDocument(documentId, schema) {
     return {
       success: false,
       error: error.message,
+      field,
     }
   }
 }
 
-// Function to fetch documents of a specific type
-async function fetchDocuments(type) {
+// Function to fetch documents of a specific type that need translation
+async function fetchDocuments(type, fields) {
   try {
-    // This query fetches documents of the specified type that have source language fields
-    // but are missing at least one of the target language fields
-    // Adjust this query based on your schema and translation needs
-    const query = `*[_type == "${type}" && (
-      defined(title) && (!defined(title_${TARGET_LANGUAGE}) || title_${TARGET_LANGUAGE} == "") ||
-      defined(description) && (!defined(description_${TARGET_LANGUAGE}) || description_${TARGET_LANGUAGE} == "")
-    )]`
-
+    // Build query conditions for each field to check if target language is missing
+    const fieldConditions = fields.map(field => 
+      `!defined(${field}[_key == "${TARGET_LANGUAGE}"])`
+    ).join(' || ')
+    
+    // This query fetches documents that have source language fields
+    // but are missing target language translations in internationalized arrays
+    const query = `*[_type == "${type}" && (${fieldConditions})]`
+    
+    console.log(`Query for ${type}: ${query}`)
     return await client.fetch(query)
   } catch (error) {
     console.error(`Error fetching ${type} documents: ${error.message}`)
@@ -148,7 +146,7 @@ async function publishDocument(documentId) {
   }
 }
 
-// Main function to process all content types
+// Main function to process all content types with field-level translations
 async function processAllContentTypes() {
   let totalProcessed = 0
   let totalSuccess = 0
@@ -162,9 +160,10 @@ async function processAllContentTypes() {
     console.log(
       `\nProcessing ${contentType.type} (estimated ${contentType.count} documents)...`
     )
+    console.log(`Fields to translate: ${contentType.fields.join(', ')}`)
 
     // Fetch documents of current type that need translation
-    const documents = await fetchDocuments(contentType.type)
+    const documents = await fetchDocuments(contentType.type, contentType.fields)
     console.log(`Found ${documents.length} documents to translate.`)
 
     // Create a log file for this content type
@@ -180,28 +179,44 @@ async function processAllContentTypes() {
         `[${i + 1}/${documents.length}] Processing document ${document._id}...`
       )
 
-      // Translate the document
-      //   const translationResult = await translateDocument(document._id, schema)
-      const translationResult = {
-        success: true,
+      let documentSuccess = true
+      const fieldResults = []
+
+      // Translate each field individually
+      for (const field of contentType.fields) {
+        console.log(`  Translating field: ${field}`)
+        
+        // Translate the specific field
+        const translationResult = await translateDocument(document._id, schema, field)
+        // For testing, comment out the above line and uncomment below:
+        // const translationResult = { success: true, field }
+        
+        fieldResults.push(translationResult)
+        
+        if (!translationResult.success) {
+          documentSuccess = false
+          console.log(`    Field ${field}: FAILED - ${translationResult.error}`)
+        } else {
+          console.log(`    Field ${field}: SUCCESS`)
+          // Wait a moment for the translation to be processed
+          await new Promise((resolve) => setTimeout(resolve, 2000))
+        }
+        
+        // Add a delay between field translations
+        await new Promise((resolve) => setTimeout(resolve, 1000))
       }
 
-      // Log the result
+      // Log the overall result for this document
       const logEntry = `Document ${document._id}: ${
-        translationResult.success
-          ? "SUCCESS"
-          : "FAILED - " + translationResult.error
-      }\n`
+        documentSuccess ? "SUCCESS" : "PARTIAL/FAILED"
+      } - Fields: ${fieldResults.map(r => `${r.field}:${r.success ? 'OK' : 'FAIL'}`).join(', ')}\n`
       fs.appendFileSync(`${contentType.type}_translation_log.txt`, logEntry)
 
-      if (translationResult.success) {
-        // Wait a moment for the translation to be processed
-        console.log(`Waiting for translation to complete...`)
-        await new Promise((resolve) => setTimeout(resolve, 3000))
-
-        // Publish the document
-        // const publishSuccess = await publishDocument(document._id)
-        const publishSuccess = true // Simulate successful publish
+      if (documentSuccess) {
+        // Publish the document after all fields are translated
+        const publishSuccess = await publishDocument(document._id)
+        // For testing, comment out the above line and uncomment below:
+        // const publishSuccess = true
 
         if (publishSuccess) {
           totalSuccess++
@@ -216,7 +231,7 @@ async function processAllContentTypes() {
         failedDocuments.push({
           id: document._id,
           type: contentType.type,
-          reason: translationResult.error,
+          reason: "Field translation failures: " + fieldResults.filter(r => !r.success).map(r => r.field).join(', '),
         })
       }
 
@@ -250,8 +265,13 @@ processAllContentTypes()
   .catch((error) => console.error(`Error in main process: ${error.message}`))
 
 /*
+Field-Level Translation Script for Sanity with internationalized-array plugin
+
+This script translates specific fields in Sanity documents that use the 
+sanity-plugin-internationalized-array plugin for localization.
+
 Usage instructions:
-1. Install dependencies: npm install @sanity/client axios dotenv fs
+1. Install dependencies: npm install @sanity/client dotenv
 2. Create a .env file with:
    SANITY_PROJECT_ID=your_project_id
    SANITY_DATASET=your_dataset_name  
@@ -259,6 +279,19 @@ Usage instructions:
    SANITY_USER_ID=your_user_id (optional)
    TRANSLATION_STYLEGUIDE=your_styleguide (optional)
 3. Update the SOURCE_LANGUAGE and TARGET_LANGUAGE constants
-4. Update the CONTENT_TYPES array to match your content model
-5. Run: node sanity-translate.js
+4. Update the CONTENT_TYPES array to match your content model and fields
+5. Run: node sanity-translate.cjs
+
+Document Types and Fields:
+- course: title, duration, description
+- author: role, seoTitle, seoDescription  
+- dimension: title, subtitle, description
+
+The script expects fields to be internationalized arrays like:
+{
+  title: [
+    { _key: "en", value: "English title" },
+    { _key: "fr", value: "French title" }
+  ]
+}
 */
